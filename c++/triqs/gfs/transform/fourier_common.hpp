@@ -28,11 +28,16 @@
 
 #include <fftw3.h>
 
+#include <mutex>
+
 namespace triqs::gfs {
 
   using namespace triqs::arrays;
 
   // Low-level FFTW driver: performs fftw_count batched complex-to-complex transforms of the rows of in into out.
   void _fourier_base(array_const_view<dcomplex, 2> in, array_view<dcomplex, 2> out, int rank, int *dims, int fftw_count, int fftw_backward_forward);
+
+  // Creating and destroying FFTW plans is not thread safe (executing them is): every plan is made under this mutex.
+  std::mutex &fftw_planner_mutex();
 
 } // namespace triqs::gfs

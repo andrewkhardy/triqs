@@ -26,6 +26,11 @@
 
 namespace triqs::gfs {
 
+  std::mutex &fftw_planner_mutex() {
+    static std::mutex m;
+    return m;
+  }
+
   void _fourier_base(array_const_view<dcomplex, 2> in, array_view<dcomplex, 2> out, int rank, int *dims, int fftw_count, int fftw_backward_forward) {
 
     // FFTW takes a non-const fftw_complex* even though FFTW_ESTIMATE does not modify the input buffer; the binary
@@ -35,20 +40,25 @@ namespace triqs::gfs {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): required for FFTW C interop
     auto out_fft = reinterpret_cast<fftw_complex *>(out.data());
 
-    auto p = fftw_plan_many_dft(rank,                                          // rank
-                                dims,                                          // the dimension
-                                fftw_count,                                    // how many FFT : here 1
-                                in_fft,                                        // in data
-                                nullptr,                                       // embed : unused. Doc unclear ?
-                                static_cast<int>(in.indexmap().strides()[0]),  // stride of the in data
-                                1,                                             // in : shift for multi fft.
-                                out_fft,                                       // out data
-                                nullptr,                                       // embed : unused. Doc unclear ?
-                                static_cast<int>(out.indexmap().strides()[0]), // stride of the out data
-                                1,                                             // out : shift for multi fft.
-                                fftw_backward_forward, FFTW_ESTIMATE);
+    fftw_plan p = nullptr;
+    {
+      std::lock_guard lock{fftw_planner_mutex()};
+      p = fftw_plan_many_dft(rank,                                          // rank
+                             dims,                                          // the dimension
+                             fftw_count,                                    // how many FFT : here 1
+                             in_fft,                                        // in data
+                             nullptr,                                       // embed : unused. Doc unclear ?
+                             static_cast<int>(in.indexmap().strides()[0]),  // stride of the in data
+                             1,                                             // in : shift for multi fft.
+                             out_fft,                                       // out data
+                             nullptr,                                       // embed : unused. Doc unclear ?
+                             static_cast<int>(out.indexmap().strides()[0]), // stride of the out data
+                             1,                                             // out : shift for multi fft.
+                             fftw_backward_forward, FFTW_ESTIMATE);
+    }
 
     fftw_execute(p);
+    std::lock_guard lock{fftw_planner_mutex()};
     fftw_destroy_plan(p);
   }
 

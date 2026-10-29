@@ -26,9 +26,9 @@ double theta(double x) { return x > 0 ? 1.0 : (x < 0 ? 0.0 : 0.5); };
 // Generic Fourier test function for different ranks
 template <int TARGET_RANK> void test_fourier() {
   double precision = 1e-4;
-  double w_max = 40;
-  int Nw       = 1001;
-  double E     = 1;
+  double w_max     = 40;
+  int Nw           = 1001;
+  double E         = 1;
 
   std::array<long, TARGET_RANK> shape{};
 
@@ -89,5 +89,52 @@ TEST(FourierReal, Scalar) { test_fourier<0>(); }
 TEST(FourierReal, Matrix) { test_fourier<2>(); }
 TEST(FourierReal, Tensor3) { test_fourier<3>(); }
 TEST(FourierReal, Tensor4) { test_fourier<4>(); }
+
+// The plans and phase factors are cached per mesh pair: check the transforms without tail against direct sums, that a
+// repeated call reproduces the first one exactly, and that the result is unchanged once the cache has cycled through
+// more mesh pairs than it holds.
+TEST(FourierReal, CachedAgainstDirectSum) {
+  auto w_mesh = mesh::refreq{-10, 10, 401};
+  auto t_mesh = make_adjoint_mesh(w_mesh);
+  auto L      = w_mesh.size();
+
+  auto Gw = gf<refreq, matrix_valued>{w_mesh, {2, 2}};
+  for (long n = 0; n < L; ++n)
+    for (long a : range(2))
+      for (long b : range(2)) Gw.data()(n, a, b) = 1.0 / (w_mesh.to_value(n) - 0.5 * double(a - b) + 1i * (0.2 + 0.1 * double(a + b)));
+
+  auto Gt  = make_gf_from_fourier(Gw, t_mesh);
+  auto Gw2 = make_gf_from_fourier(Gt, w_mesh);
+
+  // g(t_j) = 1/(dt L) sum_n g(w_n) e^{-i w_n t_j} and g(w_j) = dt sum_n g(t_n) e^{i w_j t_n}
+  double corr = 1.0 / (t_mesh.delta() * static_cast<double>(L));
+  for (long j : {0L, 1L, 77L, 200L, 399L, 400L})
+    for (long a : range(2))
+      for (long b : range(2)) {
+        dcomplex st = 0, sw = 0;
+        for (long n = 0; n < L; ++n) {
+          st += Gw.data()(n, a, b) * std::exp(-1i * w_mesh.to_value(n) * t_mesh.to_value(j));
+          sw += Gt.data()(n, a, b) * std::exp(1i * w_mesh.to_value(j) * t_mesh.to_value(n));
+        }
+        EXPECT_NEAR(std::abs(corr * st - Gt.data()(j, a, b)), 0, 1e-12);
+        EXPECT_NEAR(std::abs(t_mesh.delta() * sw - Gw2.data()(j, a, b)), 0, 1e-12);
+      }
+
+  // Cache hit: same plan and phase factors, identical result
+  auto Gt_hit = make_gf_from_fourier(Gw, t_mesh);
+  EXPECT_EQ(max_element(abs(Gt_hit.data() - Gt.data())), 0.0);
+
+  // Cycle the cache through more mesh pairs than it holds, then transform on the first meshes again
+  for (long N : {101, 103, 105, 107, 109}) {
+    auto w_other   = mesh::refreq{-10, 10, N};
+    auto g_other   = gf<refreq, matrix_valued>{w_other, {2, 2}};
+    g_other.data() = 0;
+    auto g_other_t = make_gf_from_fourier(g_other, make_adjoint_mesh(w_other));
+    auto g_other_w = make_gf_from_fourier(g_other_t, w_other);
+    EXPECT_EQ(max_element(abs(g_other_w.data())), 0.0);
+  }
+  auto Gt_again = make_gf_from_fourier(Gw, t_mesh);
+  EXPECT_ARRAY_NEAR(Gt_again.data(), Gt.data(), 1e-13);
+}
 
 MAKE_MAIN;
